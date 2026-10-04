@@ -6,16 +6,23 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# Render o'chib qolmasligi uchun kichik veb-server
+# Render va UptimeRobot uchun HEAD/GET so'rovlarini qabul qiluvchi veb-server
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/html")
         self.end_headers()
         self.wfile.write(b"Bot 24/7 ishlamoqda!")
 
     def do_HEAD(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/html")
         self.end_headers()
+
+def run_http_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(('0.0.0.0', port), SimpleHTTPRequestHandler)
+    server.serve_forever()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
@@ -123,13 +130,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "3. Admin bilan bog'lanib postni tasdiqlating.\n\n"
             "👨‍💻 <b>Admin aloqa:</b> @admin_profi"
         )
-        keyboard = [[InlineKeyboardButton("⬅️️ Ortga", callback_data="main_menu")]]
+        keyboard = [[InlineKeyboardButton("⬅️ Ortga", callback_data="main_menu")]]
         await query.message.edit_text(text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
 
 def main():
-    # Veb-serverni alohida oqimda (thread) ishga tushiramiz
     threading.Thread(target=run_http_server, daemon=True).start()
-    
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
