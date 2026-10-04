@@ -4,10 +4,10 @@ import random
 import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler, 
-    ConversationHandler, filters, ContextTypes
+    ConversationHandler, PreCheckoutQueryHandler, filters, ContextTypes
 )
 
 # Render va UptimeRobot uchun veb-server
@@ -29,11 +29,13 @@ def run_http_server():
     server.serve_forever()
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+# Telegram Wallet orqali xalqaro to'lov provayder tokeni
+WALLET_PROVIDER_TOKEN = os.environ.get("WALLET_PROVIDER_TOKEN", "123456789:TEST:WALLET")
 
 user_cooldowns = {}
 user_balances = {}  # user_id: rekcoin_amount
 
-# Conversation states
+# Conversation holatlari
 SELECT_CATEGORY, ENTER_TITLE, ENTER_DESCRIPTION, UPLOAD_PHOTO, ENTER_LINK = range(5)
 ADD_COMMENT = 10
 
@@ -58,15 +60,15 @@ ads_database["📲 Ijtimoiy tarmoqlar"].append({
     "photo": None, 
     "views": 0, 
     "likes": set(),
-    "comments": []  # [{"user": name, "text": comment}]
+    "comments": []
 })
 
-# Klaviatura menyulari
+# Asosiy tugmalar menyusi
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     [
         [KeyboardButton("🛍 Do'konlar va Aksiyalar"), KeyboardButton("🎲 Tasodifiy reklama")],
         [KeyboardButton("👤 Mening profilim"), KeyboardButton("📊 Mening reklamalarim")],
-        [KeyboardButton("📢 Reklama joylashtirish")]
+        [KeyboardButton("📢 Reklama joylashtirish"), KeyboardButton("🌐 Premium Obuna (Wallet/USDT)")]
     ],
     resize_keyboard=True
 )
@@ -75,14 +77,14 @@ CATEGORIES_LIST = [
     [KeyboardButton("🎲 Tasodifiy reklama")],
     [KeyboardButton("📲 Ijtimoiy tarmoqlar"), KeyboardButton("👕 Kiyim va Go'zallik")],
     [KeyboardButton("📱 Texnika va Gadjetlar"), KeyboardButton("🍕 Oziq-ovqat va Kafe")],
-    [KeyboardButton("🚗 Avto va Ko'chmas mulk"), KeyboardButton("🎓 Ta'lim va Ish o mebellari")],
+    [KeyboardButton("🚗 Avto va Ko'chmas mulk"), KeyboardButton("🎓 Ta'lim va Ish o'rinlari")],
     [KeyboardButton("🛠 Xizmatlar va Boshqalar")],
     [KeyboardButton("⬅️ Bosh menyu")]
 ]
 
 CATEGORIES_KEYBOARD = ReplyKeyboardMarkup(CATEGORIES_LIST, resize_keyboard=True)
 
-# Xabarlarni 5 daqiqadan so'ng avtomatik o'chirish
+# Reklama xabarini 5 daqiqa (300 soniya) dan so'ng avtomatik o'chirish
 async def delete_message_later(context: ContextTypes.DEFAULT_TYPE, chat_id: int, message_id: int, delay: int = 300):
     await asyncio.sleep(delay)
     try:
@@ -90,7 +92,7 @@ async def delete_message_later(context: ContextTypes.DEFAULT_TYPE, chat_id: int,
     except Exception:
         pass
 
-# Reklama Inline klaviaturasini shakllantirish
+# Reklama tugmalarini yaratish
 def build_ad_keyboard(category: str, ad: dict, user_id: int) -> InlineKeyboardMarkup:
     has_liked = user_id in ad["likes"]
     like_text = f"💔 Unlike ({len(ad['likes'])})" if has_liked else f"❤️ Like ({len(ad['likes'])})"
@@ -140,7 +142,6 @@ async def show_ad(update_or_query, context: ContextTypes.DEFAULT_TYPE, category:
                 await update_or_query.answer(msg_text, show_alert=True)
             return
 
-    # Reklamani tanlash
     if category == "random" or not category:
         all_ads = [ad for cat_ads in ads_database.values() for ad in cat_ads]
         if not all_ads:
@@ -179,25 +180,57 @@ async def show_ad(update_or_query, context: ContextTypes.DEFAULT_TYPE, category:
     sent_msg = None
     if selected_ad.get("photo"):
         sent_msg = await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=selected_ad["photo"],
-            caption=ad_text,
-            parse_mode="HTML",
-            reply_markup=reply_markup
+            chat_id=chat_id, photo=selected_ad["photo"], caption=ad_text, parse_mode="HTML", reply_markup=reply_markup
         )
     else:
         sent_msg = await context.bot.send_message(
-            chat_id=chat_id,
-            text=ad_text,
-            parse_mode="HTML",
-            reply_markup=reply_markup
+            chat_id=chat_id, text=ad_text, parse_mode="HTML", reply_markup=reply_markup
         )
 
-    # 5 daqiqa (300 sek) dan so'ng xabarni avtomatik o'chirish taymerini ishga tushirish
     if sent_msg:
         asyncio.create_task(delete_message_later(context, chat_id, sent_msg.message_id, 300))
 
-# Matnli xabarlarni qayta ishlash
+# TELEGRAM WALLET (XALQARO) TO'LOV TIZIMI
+async def send_wallet_invoice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.message.chat_id
+    title = "1 Oylik Premium Reklama Obunasi"
+    description = "Telegram Wallet orqali xalqaro obuna: 1 oy davomida ustuvor reklama va 3000 Rekcoin."
+    payload = "Global_Wallet_Premium_Subscription"
+    currency = "USD"
+    
+    # 8.00 USD (Sentlarda kiritiladi: 800)
+    prices = [LabeledPrice("1 Oylik Premium (USDT/TON)", 800)]
+
+    await context.bot.send_invoice(
+        chat_id=chat_id,
+        title=title,
+        description=description,
+        payload=payload,
+        provider_token=WALLET_PROVIDER_TOKEN,
+        currency=currency,
+        prices=prices,
+        start_parameter="global-wallet-pay"
+    )
+
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    if query.invoice_payload != "Global_Wallet_Premium_Subscription":
+        await query.answer(ok=False, error_message="To'lov tizimida xatolik yuz berdi.")
+    else:
+        await query.answer(ok=True)
+
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    user_balances[user_id] = user_balances.get(user_id, 0) + 3000
+    
+    await update.message.reply_text(
+        "🎉 <b>Xalqaro to'lovingiz muvaffaqiyatli qabul qilindi!</b>\n\n"
+        "💳 Hisobingizga <b>3000 Rekcoin</b> hamda Premium imkoniyatlar biriktirildi.",
+        parse_mode="HTML",
+        reply_markup=MAIN_KEYBOARD
+    )
+
+# Matnli xabarlarni ishlash
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.message.from_user.id
@@ -213,6 +246,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == "🎲 Tasodifiy reklama":
         await show_ad(update, context, category="random")
+
+    elif text == "🌐 Premium Obuna (Wallet/USDT)":
+        await send_wallet_invoice(update, context)
 
     elif text == "👤 Mening profilim":
         coins = user_balances.get(user_id, 0)
@@ -233,7 +269,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for ad in ads:
                 count += 1
                 msg += f"📌 <b>[{cat}]</b> {ad['title']}\n"
-                msg += f"👁 Ko'rishlar: <b>{ad['views']}</b> | ❤️ Like: <b>{len(ad['likes'])}</b> | 💬 Izohlar: <b>{len(ad.get('comments', []))}</b>\n"
+                msg += f"👁 Ko'rishlar: <b>{ad['views']}</b> | ❤️️ Like: <b>{len(ad['likes'])}</b> | 💬 Izohlar: <b>{len(ad.get('comments', []))}</b>\n"
                 msg += "-------------------------\n"
         if count == 0:
             msg = "Hozircha hech qanday reklama mavjud emas."
@@ -322,7 +358,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return ADD_COMMENT
 
-# Izoh yozish holati
 async def comment_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
     comment_text = update.message.text
     user_name = update.message.from_user.first_name
@@ -339,7 +374,7 @@ async def comment_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     return ConversationHandler.END
 
-# --- REKLAMA JOYLASHTIRISH HANDLERS ---
+# --- REKLAMA JOYLASHTIRISH CONVERSATION ---
 
 async def start_add_ad(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -463,7 +498,7 @@ def main():
     threading.Thread(target=run_http_server, daemon=True).start()
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Reklama qo'shish uchun conversation
+    # Reklama qo'shish uchun Conversation
     add_ad_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(start_add_ad, pattern="^start_add_ad$")],
         states={
@@ -479,7 +514,7 @@ def main():
         fallbacks=[CommandHandler("cancel", cancel_add_ad)]
     )
 
-    # Izoh yozish uchun conversation
+    # Izoh yozish uchun Conversation
     comment_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(button_handler, pattern="^writecomment_")],
         states={
@@ -491,6 +526,11 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(add_ad_handler)
     app.add_handler(comment_handler)
+    
+    # To'lov Handlerlari
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
+
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(button_handler))
     
